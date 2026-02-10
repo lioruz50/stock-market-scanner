@@ -2,28 +2,32 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 
-# --- 1. הגדרות דף ותיקון עברית (CSS) ---
+# --- 1. הגדרות דף ותיקון עברית חזותי (CSS) ---
 st.set_page_config(page_title="Alpha Market Hunter PRO", layout="wide")
 
-# הזרקת CSS ליישור לימין עבור כל האפליקציה
+# הזרקת CSS לתיקון כיווניות ויישור טקסט לימין
 st.markdown("""
     <style>
-    .main, .sidebar-content, div[role="tooltip"] {
+    @import url('https://fonts.googleapis.com/css2?family=Assistant:wght@400;700&display=swap');
+    
+    html, body, [data-testid="stSidebar"], .main {
+        direction: rtl;
+        text-align: right;
+        font-family: 'Assistant', sans-serif;
+    }
+    /* תיקון לבועות הסבר (Tooltips) */
+    div[data-testid="stTooltipContent"] {
         direction: rtl;
         text-align: right;
     }
-    div.stButton > button {
+    /* יישור כפתורים ותיבות טקסט */
+    .stButton>button, .stSelectbox, .stNumberInput {
         direction: rtl;
-    }
-    /* תיקון ספציפי לטקסט עזרה שיוצא מהסליידרים */
-    .stTooltipIcon {
-        order: -1;
-        margin-left: 5px;
     }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. משיכת רשימת מניות יציבה ---
+# --- 2. משיכת רשימת מניות ---
 @st.cache_data(ttl=86400)
 def get_all_tickers():
     return [
@@ -45,22 +49,18 @@ def analyze_stock(ticker, p):
         
         if price == 0: return None
 
+        # חישוב שווי הוגן
         future_eps = eps * ((1 + p['growth']) ** 5)
         fair_value = (future_eps * p['target_pe']) / 1.6 
         upside = ((fair_value / price) - 1) * 100
         
+        # חישוב Score (50% ROE, 50% Upside)
         score = round((roe * 50) + (upside * 0.5), 1)
         
         passed = True
         if roe < (p['min_roe']/100) or debt > p['max_debt'] or upside < p['min_upside']:
             passed = False
             
-        if p['use_ma200']:
-            hist = stock.history(period="1y")
-            if len(hist) >= 200:
-                ma200 = hist['Close'].rolling(200).mean().iloc[-1]
-                if price < ma200: passed = False
-
         return {
             "Ticker": ticker,
             "Name": info.get('shortName', ticker),
@@ -75,76 +75,75 @@ def analyze_stock(ticker, p):
 # --- 4. ממשק משתמש ---
 st.title("🛡️ Alpha Market Hunter - סורק הזדמנויות")
 
+# כפתורי מצבים (Presets)
 st.subheader("⚡ בחר סגנון סריקה מהיר")
-col1, col2, col3 = st.columns(3)
+c1, c2, c3 = st.columns(3)
 
 if 'min_roe' not in st.session_state:
     st.session_state.min_roe, st.session_state.min_upside, st.session_state.max_debt = 12, 10, 120
     st.session_state.target_pe, st.session_state.growth = 15, 10
 
-with col1:
+with c1:
     if st.button("🟢 מצב מקל (חיפוש רחב)"):
         st.session_state.min_roe, st.session_state.min_upside, st.session_state.max_debt = 5, -5, 200
         st.session_state.target_pe, st.session_state.growth = 20, 15
-with col2:
+with c2:
     if st.button("🔵 מצב הוגן (מאוזן)"):
         st.session_state.min_roe, st.session_state.min_upside, st.session_state.max_debt = 12, 10, 120
         st.session_state.target_pe, st.session_state.growth = 15, 10
-with col3:
+with c3:
     if st.button("🔴 מצב מחמיר (יהלומים בלבד)"):
         st.session_state.min_roe, st.session_state.min_upside, st.session_state.max_debt = 20, 25, 80
         st.session_state.target_pe, st.session_state.growth = 12, 8
 
 st.divider()
 
+# סרגל צד עם הסברים מעודכנים
 st.sidebar.header("⚙️ פילטרים והסברים")
 
 min_roe = st.sidebar.slider("מינימום ROE (%)", 0, 50, st.session_state.min_roe, format="%d%%",
-    help="מראה כמה רווח החברה מייצרת מההון העצמי שלה. מעל 15% מעיד על ניהול מצוין.")
+    help="מראה כמה רווח החברה מייצרת מההון העצמי שלה. ככל שיותר גבוה - הניהול יעיל יותר.")
 
 max_debt = st.sidebar.slider("מקסימום חוב/הון", 0, 200, st.session_state.max_debt,
-    help="ככל שהמספר נמוך יותר, החברה פחות מסוכנת וחסינה יותר למשברים פיננסיים.")
+    help="רמת המינוף של החברה. מספר נמוך מעיד על חברה יציבה פיננסית.")
 
 min_upside = st.sidebar.slider("מינימום Upside (%)", -20, 100, st.session_state.min_upside, format="%d%%",
     help="הפער בין מחיר השוק לשווי ההוגן. Upside גבוה אומר שהמניה נסחרת בהנחה.")
 
 target_pe = st.sidebar.number_input("מכפיל יעד (P/E)", 5, 50, st.session_state.target_pe,
-    help="המכפיל שאתה צופה לחברה בעתיד. חברות טכנולוגיה מקבלות בדרך כלל 25+, יציבות 15.")
+    help="המכפיל העתידי הצפוי לחברה (למשל: טכנולוגיה 25, תעשייה 15).")
 
 growth = st.sidebar.slider("צמיחה חזויה שנתית", 1, 50, st.session_state.growth, format="%d%%",
-    help="קצב גידול הרווחים הצפוי. זה המנוע שדוחף את מחיר המניה למעלה.") / 100
-
-use_ma200 = st.sidebar.checkbox("סינון סכינים נופלות (MA200)", value=False,
-    help="מוודא שהמניה לא נמצאת במגמת ירידה חדה על ידי בדיקת ממוצע המחיר ב-200 הימים האחרונים.")
+    help="קצב הגידול השנתי הצפוי ברווחים ל-5 השנים הקרובות.") / 100
 
 limit = st.sidebar.number_input("כמות מניות לסריקה", 10, 100, 40)
 
-params = {'min_roe': min_roe, 'max_debt': max_debt, 'min_upside': min_upside, 'target_pe': target_pe, 'growth': growth, 'use_ma200': use_ma200}
-
-if st.button("🚀 הרץ סריקה"):
-    all_scanned = []
-    progress = st.progress(0)
+if st.button("🚀 הרץ סריקה עכשיו"):
+    all_res = []
+    prog = st.progress(0)
+    params = {'min_roe': min_roe, 'max_debt': max_debt, 'min_upside': min_upside, 'target_pe': target_pe, 'growth': growth}
+    
     for i, t in enumerate(get_all_tickers()[:int(limit)]):
         res = analyze_stock(t, params)
-        if res: all_scanned.append(res)
-        progress.progress((i + 1) / int(limit))
+        if res: all_res.append(res)
+        prog.progress((i + 1) / int(limit))
     
-    if all_scanned:
-        df_all = pd.DataFrame(all_scanned).sort_values(by="Score", ascending=False)
-        passed_df = df_all[df_all['Passed'] == True].drop(columns=['Passed'])
+    if all_res:
+        df = pd.DataFrame(all_res).sort_values(by="Score", ascending=False)
         
-        st.subheader(f"✅ הזדמנויות שעברו את הסינון ({len(passed_df)})")
-        st.dataframe(passed_df, use_container_width=True)
+        st.subheader("✅ הזדמנויות שעברו את הסינון")
+        st.dataframe(df[df['Passed'] == True].drop(columns=['Passed']), use_container_width=True)
             
         st.divider()
         st.subheader("📊 דירוג מלא של כל המניות שנסרקו")
-        st.dataframe(df_all.drop(columns=['Passed']), use_container_width=True)
+        st.dataframe(df.drop(columns=['Passed']), use_container_width=True)
 
-        st.success("""
+        # הסבר שקוף על השקלול
+        st.info(f"""
         ### 🧠 איך חישבנו את התוצאות?
-        הציון הסופי (**Score**) מורכב משילוב של שני גורמים מרכזיים:
-        1. **מדד האיכות (50%):** מבוסס על ה-**ROE**. אנחנו מחפשים חברות עם ניהול יעיל.
-        2. **מדד הערך (50%):** מבוסס על ה-**Upside**. אנחנו מחפשים פער בין המחיר לשווי האמיתי.
+        הציון הסופי (Score) מורכב משילוב של שני גורמים מרכזיים:
+        1. **מדד האיכות (50%):** מבוסס על ה-ROE. אנחנו מחפשים חברות עם ניהול יעיל.
+        2. **מדד הערך (50%):** מבוסס על ה-Upside. אנחנו מחפשים פער בין המחיר לשווי האמיתי.
 
         **מה המשמעות?**
         * **מעל 30:** הזדמנות קנייה חזקה.
