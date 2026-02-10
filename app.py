@@ -3,88 +3,138 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 
-# --- 1. הגדרות ועיצוב ---
-st.set_page_config(page_title="Opportunity Hunter Pro", layout="wide")
+# --- 1. הגדרות דף ---
+st.set_page_config(page_title="Market Hunter Pro v4", layout="wide")
 
-# --- 2. מנוע החישוב של "הזדמנות קנייה" ---
-def calculate_intrinsic_value(ticker_data, growth_rate=0.12, discount_rate=0.10):
-    """
-    מחשב שווי הוגן לפי מודל DCF מקוצר - בדיוק כמו באקסל שלך
-    """
+# --- 2. פונקציות משיכת רשימות (S&P 500 + NASDAQ 100) ---
+@st.cache_data
+def get_market_tickers():
+    # S&P 500 מויקיפדיה
+    sp500 = pd.read_html('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')[0]['Symbol'].tolist()
+    # NASDAQ 100 מויקיפדיה
+    nasdaq100 = pd.read_html('https://en.wikipedia.org/wiki/Nasdaq-100')[4]['Ticker'].tolist()
+    
+    # איחוד והסרת כפילויות
+    all_tickers = list(set(sp500 + nasdaq100))
+    return sorted([t.replace('.', '-') for t in all_tickers])
+
+# --- 3. מנוע הניתוח המקצועי ---
+def get_sentiment_score(ticker):
     try:
-        current_price = ticker_data['price']
-        eps = ticker_data['eps'] # רווח למניה
-        
-        # חישוב רווח חזוי ל-5 שנים
-        future_eps = eps * ((1 + growth_rate) ** 5)
-        # מכפיל יעד שמרני (ממוצע היסטורי או 20)
-        target_pe = min(ticker_data['pe'], 25) 
-        
-        future_value = future_eps * target_pe
-        fair_value_today = future_value / ((1 + discount_rate) ** 5)
-        
-        upside = ((fair_value_today / current_price) - 1) * 100
-        return round(fair_value_today, 2), round(upside, 1)
-    except:
-        return 0, 0
+        stock = yf.Ticker(ticker)
+        news = stock.news
+        if not news: return 50
+        neg_words = ['uncertainty', 'weak', 'cut', 'lawsuit', 'drop', 'warning', 'bad', 'miss']
+        score = 80
+        for n in news[:3]:
+            if any(w in n['title'].lower() for w in neg_words): score -= 20
+        return max(score, 0)
+    except: return 50
 
-@st.cache_data(ttl=3600)
-def scan_for_opportunities(ticker):
+def analyze_stock(ticker, params):
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
         hist = stock.history(period="1y")
         
-        # פילטרים של איכות (Quality)
-        data = {
-            "price": info.get('currentPrice', 0),
-            "eps": info.get('trailingEps', 0),
-            "pe": info.get('trailingPE', 20),
-            "roe": info.get('returnOnEquity', 0),
-            "debt_to_equity": info.get('debtToEquity', 100),
-            "fcf": info.get('freeCashflow', 0)
-        }
+        if len(hist) < 200: return None
         
-        # תנאי סף למניעת "זבל" או "סכינים נופלות"
+        # נתונים בסיסיים
+        price = info.get('currentPrice', 0)
+        roe = info.get('returnOnEquity', 0)
+        debt_to_equity = info.get('debtToEquity', 999)
+        peg = info.get('pegRatio', 0)
+        eps_growth = info.get('earningsGrowth', 0)
         ma200 = hist['Close'].rolling(200).mean().iloc[-1]
-        if data['price'] < ma200 or data['roe'] < 0.15 or data['eps'] <= 0:
-            return None
-            
-        fair_value, upside = calculate_intrinsic_value(data)
         
-        # הגדרת "הזדמנות" - רק אם יש Upside של מעל 15%
-        if upside > 15:
-            return {
-                "Ticker": ticker,
-                "Name": info.get('shortName', ticker),
-                "Current Price": f"${data['price']:.2f}",
-                "Fair Value": f"${fair_value:.2f}",
-                "Upside": f"{upside}%",
-                "Quality Score": round(data['roe'] * 100, 1)
-            }
+        # בדיקת קריטריונים דינמית (לפי בחירת המשתמש)
+        if params['use_ma200'] and price < ma200: return None
+        if roe < (params['min_roe'] / 100): return None
+        if debt_to_equity > params['max_debt']: return None
+        if peg > params['max_peg'] or peg <= 0: return None
+        
+        # חישוב Upside (שווי פנימי שמרני)
+        fair_value = (info.get('trailingEps', 0) * (1 + params['growth_est'])) * params['target_pe']
+        upside = ((fair_value / price) - 1) * 100
+        
+        if upside < params['min_upside']: return None
+        
+        sentiment = get_sentiment_score(ticker)
+        
+        return {
+            "Symbol": ticker,
+            "Name": info.get('shortName', ticker),
+            "Price": price,
+            "ROE%": round(roe * 100, 1),
+            "Debt/Equity": debt_to_equity,
+            "Upside%": round(upside, 1),
+            "Sentiment": sentiment,
+            "Score": round((roe * 30) + (sentiment * 0.3) + (upside * 0.4), 1)
+        }
     except:
         return None
 
-# --- 3. ממשק משתמש ---
-st.title("🎯 Opportunity Hunter - איתור הזדמנויות קנייה")
-st.write("המערכת סורקת מניות מובילות ומציגה רק את אלו שנסחרות ב'הנחה' משמעותית מתחת לשווי ההוגן שלהן.")
+# --- 4. ממשק משתמש (לוח בקרה) ---
+st.sidebar.title("⚙️ הגדרות סריקה")
+st.sidebar.subheader("קריטריונים פונדמנטליים")
+min_roe = st.sidebar.slider("מינימום ROE (%)", 0, 50, 15)
+max_debt = st.sidebar.slider("מקסימום יחס חוב/הון", 0, 200, 100)
+max_peg = st.sidebar.slider("מקסימום יחס PEG", 0.5, 3.0, 1.5)
 
-if st.button("🚀 חפש הזדמנויות ב-S&P 500"):
-    # רשימה מורחבת של מובילות שוק
-    market_leaders = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "AVGO", "COST", "NFLX", "ADBE", "CRM", "AMD", "QCOM", "V", "MA", "JPM", "UNH"]
+st.sidebar.subheader("הערכת שווי (Valuation)")
+min_upside = st.sidebar.slider("מינימום Upside מבוקש (%)", 0, 100, 20)
+target_pe = st.sidebar.number_input("מכפיל יעד לחישוב שווי", 10, 40, 20)
+growth_est = st.sidebar.slider("הערכת צמיחה שנתית (%)", 5, 30, 12) / 100
+
+st.sidebar.subheader("פילטר טכני")
+use_ma200 = st.sidebar.checkbox("פסול מניות במגמת ירידה (מתחת ל-MA200)", value=True)
+
+limit_scan = st.sidebar.number_input("כמה מניות לסרוק? (לסריקה מלאה רשום 600)", 10, 600, 50)
+
+# --- 5. הרצת הסריקה ---
+st.title("🔍 Market Hunter Pro - סורק הזדמנויות עומק")
+st.write(f"הסורק רץ כרגע על מדדי ה-S&P 500 וה-NASDAQ 100 ומחפש מניות שעומדות בהגדרות שלך.")
+
+if st.button("🚀 התחל סריקה מקיפה"):
+    all_tickers = get_market_tickers()
+    selected_tickers = all_tickers[:limit_scan]
     
-    opportunities = []
-    bar = st.progress(0)
+    params = {
+        'min_roe': min_roe, 'max_debt': max_debt, 'max_peg': max_peg,
+        'min_upside': min_upside, 'target_pe': target_pe, 'growth_est': growth_est,
+        'use_ma200': use_ma200
+    }
     
-    for i, t in enumerate(market_leaders):
-        res = scan_for_opportunities(t)
-        if res:
-            opportunities.append(res)
-        bar.progress((i + 1) / len(market_leaders))
+    results = []
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for i, t in enumerate(selected_tickers):
+        status_text.text(f"בודק את {t} ({i+1}/{len(selected_tickers)})...")
+        res = analyze_stock(t, params)
+        if res: results.append(res)
+        progress_bar.progress((i + 1) / len(selected_tickers))
+    
+    status_text.text("הסריקה הושלמה!")
+    
+    if results:
+        df = pd.DataFrame(results).sort_values(by="Score", ascending=False)
+        st.subheader(f"✅ נמצאו {len(df)} הזדמנויות קנייה")
         
-    if opportunities:
-        df = pd.DataFrame(opportunities).sort_values(by="Upside", ascending=False)
-        st.subheader("💎 הזדמנויות קנייה שנמצאו (Sorted by Upside)")
-        st.table(df)
+        # תצוגה מעוצבת
+        st.dataframe(df.style.background_gradient(subset=['Score', 'Upside%'], cmap='RdYlGn'), use_container_width=True)
+        
+        # כפתור הורדה למכירה/דוח
+        csv = df.to_csv(index=False).encode('utf-8')
+        st.download_button("📥 הורד דוח הזדמנויות (CSV)", csv, "opportunities.csv", "text/csv")
     else:
-        st.warning("לא נמצאו הזדמנויות קנייה שעומדות בקריטריונים המחמירים כרגע.")
+        st.error("לא נמצאו מניות שעונות על כל הקריטריונים. נסה להקל מעט בהגדרות (למשל להוריד ROE או להעלות PEG).")
+
+# --- 6. הסבר למשקיע ---
+with st.expander("ℹ️ איך עובד מודל ה-Score?"):
+    st.write("""
+    הציון הסופי משקלל שלושה עולמות:
+    1. **איכות הניהול (30%):** מבוסס על ROE - כמה החברה יודעת לייצר כסף מההון שלה.
+    2. **ביטחון וסנטימנט (30%):** ניתוח חדשות ופילטר טכני למניעת כניסה לחברות ב'משבר אמון'.
+    3. **פוטנציאל כלכלי (40%):** הפער בין המחיר הנוכחי לשווי הפנימי (DCF שמרני).
+    """)
