@@ -2,8 +2,26 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 
-# --- 1. הגדרות דף ---
+# --- 1. הגדרות דף ותיקון עברית (CSS) ---
 st.set_page_config(page_title="Alpha Market Hunter PRO", layout="wide")
+
+# הזרקת CSS ליישור לימין עבור כל האפליקציה
+st.markdown("""
+    <style>
+    .main, .sidebar-content, div[role="tooltip"] {
+        direction: rtl;
+        text-align: right;
+    }
+    div.stButton > button {
+        direction: rtl;
+    }
+    /* תיקון ספציפי לטקסט עזרה שיוצא מהסליידרים */
+    .stTooltipIcon {
+        order: -1;
+        margin-left: 5px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
 # --- 2. משיכת רשימת מניות יציבה ---
 @st.cache_data(ttl=86400)
@@ -27,13 +45,10 @@ def analyze_stock(ticker, p):
         
         if price == 0: return None
 
-        # חישוב שווי הוגן ו-Upside
         future_eps = eps * ((1 + p['growth']) ** 5)
         fair_value = (future_eps * p['target_pe']) / 1.6 
         upside = ((fair_value / price) - 1) * 100
         
-        # שקלול ציון איכות (Score)
-        # הנוסחה נותנת משקל שווה לאיכות הניהול (ROE) ולפוטנציאל הרווח (Upside)
         score = round((roe * 50) + (upside * 0.5), 1)
         
         passed = True
@@ -57,7 +72,7 @@ def analyze_stock(ticker, p):
         }
     except: return None
 
-# --- 4. ממשק משתמש עם כפתורי מצבים והסברים ---
+# --- 4. ממשק משתמש ---
 st.title("🛡️ Alpha Market Hunter - סורק הזדמנויות")
 
 st.subheader("⚡ בחר סגנון סריקה מהיר")
@@ -82,7 +97,6 @@ with col3:
 
 st.divider()
 
-# סרגל צד עם הסברים מפורטים
 st.sidebar.header("⚙️ פילטרים והסברים")
 
 min_roe = st.sidebar.slider("מינימום ROE (%)", 0, 50, st.session_state.min_roe, format="%d%%",
@@ -117,26 +131,23 @@ if st.button("🚀 הרץ סריקה"):
     
     if all_scanned:
         df_all = pd.DataFrame(all_scanned).sort_values(by="Score", ascending=False)
-        
-        # הצגת הזדמנויות
         passed_df = df_all[df_all['Passed'] == True].drop(columns=['Passed'])
+        
         st.subheader(f"✅ הזדמנויות שעברו את הסינון ({len(passed_df)})")
         st.dataframe(passed_df, use_container_width=True)
             
-        # דירוג מלא
         st.divider()
         st.subheader("📊 דירוג מלא של כל המניות שנסרקו")
         st.dataframe(df_all.drop(columns=['Passed']), use_container_width=True)
 
-        # --- הסבר על השקלול ---
         st.success("""
         ### 🧠 איך חישבנו את התוצאות?
         הציון הסופי (**Score**) מורכב משילוב של שני גורמים מרכזיים:
-        1. **מדד האיכות (50% מהציון):** מבוסס על ה-**ROE**. אנחנו מחפשים חברות שיודעות לייצר הרבה כסף מההון שלהן.
-        2. **מדד הערך (50% מהציון):** מבוסס על ה-**Upside**. אנחנו מחפשים את הפער בין המחיר היום לשווי שהחברה ראויה לו לפי צמיחתה.
+        1. **מדד האיכות (50%):** מבוסס על ה-**ROE**. אנחנו מחפשים חברות עם ניהול יעיל.
+        2. **מדד הערך (50%):** מבוסס על ה-**Upside**. אנחנו מחפשים פער בין המחיר לשווי האמיתי.
 
-        **מה המשמעות של הציון?**
-        * **מעל 30:** מניה איכותית שנסחרת במחיר אטרקטיבי (הזדמנות קנייה חזקה).
-        * **15-30:** חברה טובה שנסחרת במחיר הוגן.
-        * **מתחת ל-15:** המניה יקרה מדי כרגע או שהרווחיות שלה נמוכה מדי ביחס לסיכון.
+        **מה המשמעות?**
+        * **מעל 30:** הזדמנות קנייה חזקה.
+        * **15-30:** חברה טובה במחיר הוגן.
+        * **מתחת ל-15:** המניה יקרה מדי או בסיכון גבוה.
         """)
