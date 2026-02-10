@@ -1,99 +1,93 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import time
+import numpy as np
 
 # --- 1. הגדרות דף ---
-st.set_page_config(page_title="Fundamental Scanner", layout="wide")
+st.set_page_config(page_title="Pro Stock Screener 2026", layout="wide")
 
-# --- 2. רשימת מניות S&P 500 (מדגם רחב ומייצג) ---
-# הערה: בסביבת ענן, מומלץ להתחיל עם רשימה של 50-100 כדי למנוע חסימה מ-Yahoo
-TICKERS = [
-    "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "BRK-B", "JPM", "V",
-    "UNH", "MA", "PG", "HD", "COST", "AVGO", "ADBE", "CRM", "NFLX", "AMD",
-    "BAC", "ADI", "TXN", "MU", "INTC", "PYPL", "INTU", "QCOM", "AMAT", "ISRG"
-]
+# --- 2. פונקציות משיכת רשימות מניות ---
+@st.cache_data
+def get_sp500_tickers():
+    # משיכת רשימת S&P 500 מעודכנת
+    table = pd.read_html('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')
+    return table[0]['Symbol'].tolist()
 
-# --- 3. פונקציית משיכה וחישוב ---
 @st.cache_data(ttl=3600)
-def scan_stock(symbol, g_rate, p_margin, target_pe):
+def analyze_stock_pro(ticker):
     try:
-        stock = yf.Ticker(symbol)
+        stock = yf.Ticker(ticker)
         info = stock.info
-        if not info or 'currentPrice' not in info:
-            return None
+        hist = stock.history(period="1y")
         
-        price = info.get('currentPrice', 0.0)
-        rev = info.get('totalRevenue', 0.0) / 1_000_000
-        mc = info.get('marketCap', 0.0) / 1_000_000
+        if len(hist) < 200: return None
         
-        # נוסחת המודל (5 שנים קדימה)
-        future_rev = rev * ((1 + g_rate) ** 5)
-        future_profit = future_rev * p_margin
-        shares = mc / price
+        # 1. פילטר טכני - מניעת "סכינים נופלות"
+        current_price = info.get('currentPrice', 0)
+        ma200 = hist['Close'].rolling(window=200).mean().iloc[-1]
+        if current_price < ma200: return None # המניה במגמת ירידה חזקה
         
-        future_price = (future_profit * target_pe) / shares
-        cagr = ((future_price / price) ** (1/5) - 1) * 100
+        # 2. מדדי איכות (Quality)
+        roe = info.get('returnOnEquity', 0)
+        debt_to_equity = info.get('debtToEquity', 100) # מעל 100 זה מסוכן
+        
+        # 3. הערכת שווי (Valuation)
+        f_pe = info.get('forwardPE', 0)
+        peg = info.get('pegRatio', 0) # PEG מתחת ל-1 נחשב מציאה
+        
+        # חישוב "ציון איכות" (0-100)
+        quality_score = 0
+        if roe > 0.15: quality_score += 40  # ROE מעל 15%
+        if debt_to_equity < 50: quality_score += 30 # חוב נמוך
+        if 0 < peg < 1.5: quality_score += 30 # צמיחה במחיר הוגן
+        
+        if quality_score < 60: return None # מסננים רק את הטובות ביותר
         
         return {
-            "Ticker": symbol,
-            "Company": info.get('longName', symbol),
-            "Price": f"${price:.2f}",
-            "Future Price (5Y)": f"${future_price:.2f}",
-            "Expected CAGR": round(cagr, 2)
+            "Symbol": ticker,
+            "Name": info.get('longName', ticker),
+            "Sector": info.get('sector', 'N/A'),
+            "Price": current_price,
+            "Forward P/E": f_pe,
+            "ROE (%)": round(roe * 100, 2),
+            "Quality Score": quality_score
         }
-    except:
-        return None
+    except: return None
 
-# --- 4. ממשק המשתמש ---
-st.title("🔍 סורק מניות פונדמנטלי - S&P 500")
-st.write("כלי זה סורק רשימת מניות ומדרג אותן לפי פוטנציאל תשואה (CAGR) על בסיס המודל שלך.")
+# --- 3. ממשק משתמש ---
+st.title("🏆 Pro Fundamental & Momentum Screener")
+st.write("הסורק מחפש מניות ב-S&P 500 שנמצאות במגמה חיובית, עם חוב נמוך ותשואה גבוהה על ההון.")
 
-# סרגל צד להגדרת קריטריונים לסריקה
-st.sidebar.header("🎯 קריטריונים לסריקה")
-st.sidebar.write("הגדר את 'הנחות היסוד' שיחולו על כל המניות בסריקה:")
-s_growth = st.sidebar.slider("צמיחה שנתית ממוצעת (%)", 5, 30, 14) / 100 # דיפולט אקסל
-s_margin = st.sidebar.slider("שולי רווח נקי (%)", 5, 50, 35) / 100 # דיפולט אקסל
-s_pe = st.sidebar.number_input("מכפיל יעד שמרני (P/E)", value=20.0)
+if "authenticated" not in st.session_state:
+    st.session_state["authenticated"] = False
 
-# אבטחה בסיסית
-if "auth" not in st.session_state:
-    st.session_state["auth"] = False
-
-if not st.session_state["auth"]:
-    pwd = st.text_input("הזן סיסמה לכניסה:", type="password")
-    if pwd == "3535":
-        st.session_state["auth"] = True
+if not st.session_state["authenticated"]:
+    if st.text_input("Password", type="password") == "3535":
+        st.session_state["authenticated"] = True
         st.rerun()
     st.stop()
 
-# --- 5. הרצת הסורק ---
-if st.button("🚀 הרץ סריקה על מניות נבחרות"):
+if st.button("🚀 הרץ סריקה מקצועית (S&P 500)"):
+    tickers = get_sp500_tickers()[:50] # נסרוק 50 ראשונות כדוגמה למהירות
     results = []
-    progress_text = "סורק נתונים... אנא המתן"
-    my_bar = st.progress(0, text=progress_text)
     
-    for index, ticker in enumerate(TICKERS):
-        res = scan_stock(ticker, s_growth, s_margin, s_pe)
-        if res:
-            results.append(res)
-        # עדכון מד התקדמות
-        my_bar.progress((index + 1) / len(TICKERS))
-    
-    my_bar.empty()
+    progress_bar = st.progress(0)
+    for i, t in enumerate(tickers):
+        res = analyze_stock_pro(t)
+        if res: results.append(res)
+        progress_bar.progress((i + 1) / len(tickers))
     
     if results:
-        df = pd.DataFrame(results)
-        # מיון לפי התשואה הגבוהה ביותר
-        df_sorted = df.sort_values(by="Expected CAGR", ascending=False)
-        
-        st.subheader("🏆 5 המניות המבטיחות ביותר (Top Picks)")
-        st.table(df_sorted.head(5))
-        
-        st.write("---")
-        st.subheader("📊 כל תוצאות הסריקה")
-        st.dataframe(df_sorted, use_container_width=True)
+        df = pd.DataFrame(results).sort_values(by="Quality Score", ascending=False)
+        st.subheader("💎 5 המניות המומלצות ביותר לקנייה")
+        st.dataframe(df.head(5), use_container_width=True)
     else:
-        st.error("לא הצלחנו למשוך נתונים. נסה שוב בעוד כמה דקות.")
+        st.warning("לא נמצאו מניות שעומדות בקריטריונים הקשוחים כרגע.")
 
-st.info("💡 טיפ: הסורק משתמש במכפיל יעד אחיד לכל המניות. מומלץ לבחון כל מניה בנפרד לאחר הסינון הראשוני.")
+st.sidebar.markdown("""
+### קריטריונים לסריקה:
+1. **מגמה:** מחיר מעל ממוצע נע 200 (מונע מקרי PayPal).
+2. **איכות:** תשואה על ההון (ROE) מעל **15%**.
+3. **מינוף:** יחס חוב-הון נמוך מ-**50%**.
+4. **תמחור:** יחס PEG הוגן (צמיחה ביחס למכפיל).
+""")
