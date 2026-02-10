@@ -18,37 +18,33 @@ st.markdown("""
 @st.cache_data(ttl=86400)
 def get_sp500_tickers():
     try:
-        # קריאה ישירה מוויקיפדיה - דורש lxml
+        # ניסיון קריאה מוויקיפדיה (דורש lxml)
         table = pd.read_html('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')
-        df = table[0]
-        return df['Symbol'].tolist()
+        return table[0]['Symbol'].tolist()
     except:
-        # גיבוי לרשימה קצרה אם הקריאה נכשלת
-        return ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "BRK-B"]
+        # גיבוי למקרה של שגיאת רשת
+        return ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "BRK-B", "V", "MA"]
 
-# --- 3. פונקציית ניתוח ---
+# --- 3. פונקציית ניתוח (וולידציה מול נתונים עדכניים) ---
 def analyze_stock(ticker, p):
     try:
-        stock = yf.Ticker(ticker)
+        stock = yf.Ticker(ticker.replace('.', '-')) # תיקון לסימולים כמו BRK.B
         info = stock.info
         
         price = info.get('currentPrice', 0)
         if price == 0: return None
 
-        # נתונים עדכניים ביותר מהדוחות
         roe = info.get('returnOnEquity', 0)
         net_margin = info.get('profitMargins', 0)
         eps = info.get('trailingEps', 1)
         
-        # חישוב שווי הוגן
+        # חישוב שווי הוגן ו-Upside
         future_eps = eps * ((1 + p['growth']) ** 5)
         fair_value = (future_eps * p['target_pe']) / 1.6 
         upside = ((fair_value / price) - 1) * 100
         
-        # תנאי סינון
-        passed = True
-        if roe < (p['min_roe']/100) or upside < p['min_upside'] or net_margin < 0.08:
-            passed = False
+        # תנאי סינון פשוטים
+        passed = (roe >= (p['min_roe']/100)) and (upside >= p['min_upside']) and (net_margin >= 0.08)
         
         return {
             "Ticker": ticker,
@@ -63,19 +59,19 @@ def analyze_stock(ticker, p):
     except: return None
 
 # --- 4. ממשק משתמש ---
-st.title("🛡️ Alpha Market Hunter - S&P 500")
+st.title("🛡️ Alpha Market Hunter - סורק S&P 500")
 
-# פקדי סינון בסרגל הצד
+# פקדי סינון נוחים בסרגל הצד
 st.sidebar.header("⚙️ הגדרות סריקה")
 min_roe = st.sidebar.slider("מינימום ROE (%)", 0, 50, 12, format="%d%%")
 min_upside = st.sidebar.slider("מינימום Upside (%)", -20, 100, 0, format="%d%%")
 target_pe = st.sidebar.number_input("מכפיל יעד", 5, 50, 18)
 growth = st.sidebar.slider("צמיחה חזויה", 1, 50, 10, format="%d%%") / 100
-limit = st.sidebar.number_input("כמות מניות לסריקה מה-S&P", 10, 500, 50)
+limit = st.sidebar.number_input("כמות מניות לסריקה (מתוך ה-500)", 10, 500, 100)
 
 if st.button("🚀 התחל סריקה עמוקה"):
     all_tickers = get_sp500_tickers()
-    selected = all_tickers[:int(limit)]
+    selected = all_tickers[:int(limit)] # סורק לפי הכמות שבחרת
     results = []
     
     progress = st.progress(0)
@@ -87,12 +83,17 @@ if st.button("🚀 התחל סריקה עמוקה"):
     if results:
         df = pd.DataFrame(results).sort_values(by="Score", ascending=False)
         
-        # טבלת הזדמנויות
+        # טבלת מניות שעברו
         passed_df = df[df['Passed'] == True].drop(columns=['Passed'])
         st.subheader(f"✅ מניות שעברו את הסינון ({len(passed_df)})")
         st.dataframe(passed_df, use_container_width=True)
         
-        # דירוג מלא
+        # דירוג מלא לשקיפות
         st.divider()
         st.subheader("📊 דירוג מלא של כל המניות שנסרקו")
         st.dataframe(df.drop(columns=['Passed']), use_container_width=True)
+
+        # הסבר השקלול
+        st.success("""
+        **איך חישבנו את התוצאות?** הציון (Score) משלב 50% מדד איכות (ROE) ו-50% מדד ערך (Upside).
+        """)
