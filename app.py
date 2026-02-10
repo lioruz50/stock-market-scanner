@@ -3,7 +3,7 @@ import yfinance as yf
 import pandas as pd
 
 # --- 1. הגדרות דף ותיקון עברית ---
-st.set_page_config(page_title="Alpha Market Hunter", layout="wide")
+st.set_page_config(page_title="Alpha Market Hunter PRO", layout="wide")
 
 st.markdown("""
     <style>
@@ -11,43 +11,45 @@ st.markdown("""
     html, body, [data-testid="stSidebar"], .main {
         direction: rtl; text-align: right; font-family: 'Assistant', sans-serif;
     }
-    div[data-testid="stTooltipContent"] { direction: rtl; text-align: right; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. משיכת רשימת מניות ---
+# --- 2. משיכת רשימת S&P 500 המלאה ---
 @st.cache_data(ttl=86400)
-def get_all_tickers():
-    return ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "AVGO", "COST", "NFLX",
-            "ADBE", "CRM", "AMD", "QCOM", "TXN", "INTC", "MU", "AMAT", "LRCX", "TSM",
-            "V", "MA", "JPM", "BAC", "WMT", "DIS", "NKE", "ORCL", "UNH", "PFE", "KO", "PEP"]
+def get_sp500_tickers():
+    # משיכת הרשימה המעודכנת ביותר של ה-S&P 500
+    table = pd.read_html('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')
+    df = table[0]
+    return df['Symbol'].tolist()
 
-# --- 3. פונקציית ניתוח ---
+# --- 3. פונקציית ניתוח (וולידציה מול נתונים עדכניים) ---
 def analyze_stock(ticker, p):
     try:
         stock = yf.Ticker(ticker)
+        # שימוש ב-fast_info וב-info לקבלת הנתונים המעודכנים ביותר
         info = stock.info
+        
         price = info.get('currentPrice', 0)
         if price == 0: return None
 
+        # ולידציה של מדדי האיכות מהדוח האחרון
         roe = info.get('returnOnEquity', 0)
         net_margin = info.get('profitMargins', 0)
-        debt_to_equity = info.get('debtToEquity', 999)
+        debt_to_equity = info.get('debtToEquity', 0)
         eps = info.get('trailingEps', 1)
         
-        # חישוב שווי הוגן
+        # חישוב שווי הוגן לפי מודל באפט (צמיחה עתידית)
         future_eps = eps * ((1 + p['growth']) ** 5)
         fair_value = (future_eps * p['target_pe']) / 1.6 
         upside = ((fair_value / price) - 1) * 100
         
-        # בדיקת סיבות פסילה
-        reasons = []
-        if roe < (p['min_roe']/100): reasons.append(f"ROE נמוך ({roe*100:.1f}%)")
-        if net_margin < 0.08: reasons.append(f"רווח נמוך ({net_margin*100:.1f}%)")
-        if debt_to_equity > 120: reasons.append(f"חוב גבוה ({debt_to_equity:.1f})")
-        if upside < p['min_upside']: reasons.append(f"יקר מדי ({upside:.1f}% Upside)")
-
-        passed = len(reasons) == 0
+        # תנאי סינון (לפי ההגדרות הנוחות שביקשת)
+        passed = True
+        if roe < (p['min_roe']/100) or upside < p['min_upside'] or net_margin < 0.08:
+            passed = False
+        
+        # ציון שקלול (Score)
+        score = round((roe * 50) + (upside * 0.5), 1)
         
         return {
             "Ticker": ticker,
@@ -55,42 +57,50 @@ def analyze_stock(ticker, p):
             "Price": f"${price:.2f}",
             "ROE": f"{roe*100:.1f}%",
             "Margin": f"{net_margin*100:.1f}%",
+            "Debt/Eq": f"{debt_to_equity:.1f}",
             "Upside": f"{upside:.1f}%",
-            "Score": round((roe * 50) + (upside * 0.5), 1),
-            "Passed": passed,
-            "Reason": "✅ מאושר" if passed else " | ".join(reasons)
+            "Score": score,
+            "Passed": passed
         }
     except: return None
 
 # --- 4. ממשק משתמש ---
-st.title("🛡️ Alpha Market Hunter - סורק הזדמנויות")
+st.title("🛡️ Alpha Market Hunter - S&P 500 Scanner")
 
-st.sidebar.header("⚙️ הגדרות סריקה")
-min_roe = st.sidebar.slider("מינימום ROE (%)", 0, 50, 12, format="%d%%", help="יעילות הניהול")
-min_upside = st.sidebar.slider("מינימום פוטנציאל (Upside)", -20, 100, 0, format="%d%%", help="הנחה ביחס למחיר")
-target_pe = st.sidebar.number_input("מכפיל יעד", 5, 50, 20, help="מכפיל עתידי צפוי")
-growth = st.sidebar.slider("צמיחה חזויה", 1, 50, 10, format="%d%%") / 100
-limit = st.sidebar.number_input("כמות מניות", 10, 100, 40)
+st.sidebar.header("⚙️ פילטרים והסברים")
+min_roe = st.sidebar.slider("מינימום ROE (%)", 0, 50, 12, format="%d%%", help="יעילות הניהול בייצור רווח מההון")
+min_upside = st.sidebar.slider("מינימום Upside (%)", -20, 100, 0, format="%d%%", help="פוטנציאל הרווח ביחס למחיר היום")
+target_pe = st.sidebar.number_input("מכפיל יעד (P/E)", 5, 50, 18, help="המכפיל הצפוי בעוד 5 שנים")
+growth = st.sidebar.slider("צמיחה חזויה שנתית", 1, 50, 10, format="%d%%") / 100
 
-if st.button("🚀 הרץ סריקה"):
+# כמות מניות לסריקה (מתוך ה-500)
+limit = st.sidebar.number_input("כמות מניות לסריקה מה-S&P", 10, 500, 50)
+
+if st.button("🚀 התחל סריקה מקיפה"):
+    all_tickers = get_sp500_tickers()
+    selected = all_tickers[:int(limit)]
     results = []
-    progress = st.progress(0)
-    tickers = get_all_tickers()[:int(limit)]
     
-    for i, t in enumerate(tickers):
+    progress = st.progress(0)
+    status_text = st.empty()
+    
+    for i, t in enumerate(selected):
+        status_text.text(f"מנתח את {t}...")
         res = analyze_stock(t, {'min_roe': min_roe, 'min_upside': min_upside, 'target_pe': target_pe, 'growth': growth})
         if res: results.append(res)
-        progress.progress((i + 1) / len(tickers))
+        progress.progress((i + 1) / len(selected))
+    
+    status_text.empty()
     
     if results:
         df = pd.DataFrame(results).sort_values(by="Score", ascending=False)
         
-        # הצגת תוצאות שעברו
-        passed_df = df[df['Passed'] == True].drop(columns=['Passed', 'Reason'])
+        # טבלת הזדמנויות
+        passed_df = df[df['Passed'] == True].drop(columns=['Passed'])
         st.subheader(f"✅ מניות שעברו את הסינון ({len(passed_df)})")
         st.dataframe(passed_df, use_container_width=True)
         
-        # דירוג מלא עם סיבות
+        # דירוג מלא
         st.divider()
-        st.subheader("📊 דוח מלא וסיבות פסילה")
+        st.subheader("📊 דירוג מלא של המניות שנסרקו")
         st.dataframe(df.drop(columns=['Passed']), use_container_width=True)
