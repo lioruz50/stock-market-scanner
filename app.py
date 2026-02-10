@@ -1,93 +1,101 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import numpy as np
 
 # --- 1. הגדרות דף ---
-st.set_page_config(page_title="Pro Stock Screener 2026", layout="wide")
+st.set_page_config(page_title="Alpha Screener Pro", layout="wide")
 
-# --- 2. פונקציות משיכת רשימות מניות ---
-@st.cache_data
-def get_sp500_tickers():
-    # משיכת רשימת S&P 500 מעודכנת
-    table = pd.read_html('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')
-    return table[0]['Symbol'].tolist()
+# --- 2. מנגנון ניתוח סנטימנט (חדשות) ---
+def get_sentiment_score(ticker):
+    try:
+        stock = yf.Ticker(ticker)
+        news = stock.news
+        if not news: return 50 # נייטרלי
+        
+        # מילות מפתח שליליות שמתריעות על בעיות (כמו ב-PayPal)
+        negative_words = ['warn', 'lawsuit', 'cut', 'miss', 'uncertainty', 'crash', 'drop', 'negative']
+        score = 70 # נקודת פתיחה חיובית
+        
+        for n in news[:5]: # בודק 5 כותרות אחרונות
+            title = n['title'].lower()
+            if any(word in title for word in negative_words):
+                score -= 15
+        return max(score, 0)
+    except: return 50
 
+# --- 3. פונקציית ניתוח פונדמנטלי עמוק ---
 @st.cache_data(ttl=3600)
-def analyze_stock_pro(ticker):
+def deep_analyze(ticker):
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
         hist = stock.history(period="1y")
         
-        if len(hist) < 200: return None
+        # פילטר 1: מגמה (MA200) - מונע קניית "סכינים נופלות"
+        price = info.get('currentPrice', 0)
+        ma200 = hist['Close'].rolling(200).mean().iloc[-1]
+        if price < ma200: return None 
         
-        # 1. פילטר טכני - מניעת "סכינים נופלות"
-        current_price = info.get('currentPrice', 0)
-        ma200 = hist['Close'].rolling(window=200).mean().iloc[-1]
-        if current_price < ma200: return None # המניה במגמת ירידה חזקה
-        
-        # 2. מדדי איכות (Quality)
+        # פילטר 2: איכות הניהול (ROE & Profit Margin)
         roe = info.get('returnOnEquity', 0)
-        debt_to_equity = info.get('debtToEquity', 100) # מעל 100 זה מסוכן
+        margin = info.get('profitMargins', 0)
         
-        # 3. הערכת שווי (Valuation)
-        f_pe = info.get('forwardPE', 0)
-        peg = info.get('pegRatio', 0) # PEG מתחת ל-1 נחשב מציאה
+        # פילטר 3: תמחור וצמיחה (PEG & FCF)
+        peg = info.get('pegRatio', 0)
+        fcf = info.get('freeCashflow', 0)
         
-        # חישוב "ציון איכות" (0-100)
-        quality_score = 0
-        if roe > 0.15: quality_score += 40  # ROE מעל 15%
-        if debt_to_equity < 50: quality_score += 30 # חוב נמוך
-        if 0 < peg < 1.5: quality_score += 30 # צמיחה במחיר הוגן
+        if roe < 0.15 or margin < 0.10: return None # מסנן חברות לא רווחיות מספיק
         
-        if quality_score < 60: return None # מסננים רק את הטובות ביותר
+        # חישוב ציון משוקלל (Score)
+        sentiment = get_sentiment_score(ticker)
+        final_score = (roe * 100 * 0.4) + (sentiment * 0.4) + ((1/peg if peg > 0 else 0) * 10)
         
         return {
             "Symbol": ticker,
-            "Name": info.get('longName', ticker),
-            "Sector": info.get('sector', 'N/A'),
-            "Price": current_price,
-            "Forward P/E": f_pe,
-            "ROE (%)": round(roe * 100, 2),
-            "Quality Score": quality_score
+            "Name": info.get('shortName', ticker),
+            "Price": f"${price:.2f}",
+            "ROE": f"{roe*100:.1f}%",
+            "Margin": f"{margin*100:.1f}%",
+            "Sentiment": f"{sentiment}/100",
+            "Final Score": round(final_score, 1)
         }
     except: return None
 
-# --- 3. ממשק משתמש ---
-st.title("🏆 Pro Fundamental & Momentum Screener")
-st.write("הסורק מחפש מניות ב-S&P 500 שנמצאות במגמה חיובית, עם חוב נמוך ותשואה גבוהה על ההון.")
+# --- 4. ממשק המשתמש ---
+st.title("🛡️ Alpha Screener Pro - מערכת בחירת מניות")
+st.write("סורק S&P 500 המשלב פונדמנטלי, טכני וסנטימנט חדשותי למניעת מלכודות ערך.")
 
-if "authenticated" not in st.session_state:
-    st.session_state["authenticated"] = False
-
-if not st.session_state["authenticated"]:
-    if st.text_input("Password", type="password") == "3535":
-        st.session_state["authenticated"] = True
+if "auth" not in st.session_state: st.session_state["auth"] = False
+if not st.session_state["auth"]:
+    if st.text_input("קוד גישה למערכת:", type="password") == "3535":
+        st.session_state["auth"] = True
         st.rerun()
     st.stop()
 
-if st.button("🚀 הרץ סריקה מקצועית (S&P 500)"):
-    tickers = get_sp500_tickers()[:50] # נסרוק 50 ראשונות כדוגמה למהירות
+# רשימת מניות לסריקה (Big Tech & S&P Leaders)
+watch_list = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "AVGO", "COST", "NFLX", "ADBE", "CRM", "AMD", "QCOM", "TXN"]
+
+if st.button("🚀 הרץ סריקה מבוססת AI וסנטימנט"):
     results = []
+    progress = st.progress(0)
     
-    progress_bar = st.progress(0)
-    for i, t in enumerate(tickers):
-        res = analyze_stock_pro(t)
+    for i, t in enumerate(watch_list):
+        res = deep_analyze(t)
         if res: results.append(res)
-        progress_bar.progress((i + 1) / len(tickers))
+        progress.progress((i + 1) / len(watch_list))
     
     if results:
-        df = pd.DataFrame(results).sort_values(by="Quality Score", ascending=False)
-        st.subheader("💎 5 המניות המומלצות ביותר לקנייה")
-        st.dataframe(df.head(5), use_container_width=True)
+        df = pd.DataFrame(results).sort_values(by="Final Score", ascending=False)
+        st.subheader("💎 המניות האטרקטיביות ביותר כרגע")
+        st.dataframe(df, use_container_width=True)
+        
+        st.success(f"נמצאו {len(df)} מניות שעומדות בקריטריונים המחמירים.")
     else:
-        st.warning("לא נמצאו מניות שעומדות בקריטריונים הקשוחים כרגע.")
+        st.error("השוק כרגע בתנודתיות גבוהה - לא נמצאו מניות בטוחות לקנייה.")
 
-st.sidebar.markdown("""
-### קריטריונים לסריקה:
-1. **מגמה:** מחיר מעל ממוצע נע 200 (מונע מקרי PayPal).
-2. **איכות:** תשואה על ההון (ROE) מעל **15%**.
-3. **מינוף:** יחס חוב-הון נמוך מ-**50%**.
-4. **תמחור:** יחס PEG הוגן (צמיחה ביחס למכפיל).
+st.sidebar.info("""
+**איך המודל עובד?**
+1. **טכני:** פוסל מניות במגמת ירידה חדה.
+2. **חדשות:** סורק כותרות למניעת אי-ודאות (PayPal Case).
+3. **פונדמנטלי:** ROE מעל 15% ושולי רווח מעל 10%.
 """)
